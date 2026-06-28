@@ -1,0 +1,622 @@
+localparam int NUM_TRANS = 22;
+interface myif;
+
+  logic clk;
+  logic rst;
+  logic clear_acc;
+
+  logic [23:0] a_in;
+  logic [23:0] b_in;
+
+  logic [287:0] c_out;
+
+//Temporary variables for coverage
+
+  logic [7:0] a_cov;
+  logic [7:0] b_cov;
+
+  always_comb
+  begin
+    a_cov = a_in[7:0];
+    b_cov = b_in[7:0];
+  end
+
+//Functional coverage
+
+  covergroup cg @(posedge clk);
+   coverpoint clear_acc;
+
+   coverpoint a_cov
+   {
+    bins zero = {0};
+    bins low  = {[1:63]};
+    bins med  = {[64:191]};
+    bins high = {[128:255]};
+   }
+
+   coverpoint b_cov
+  {
+    bins zero = {0};
+    bins low  = {[1:63]};
+    bins med  = {[64:191]};
+    bins high = {[128:255]};
+  }
+
+cross a_cov, b_cov
+{
+      bins zero_zero =
+        binsof(a_cov) intersect {0} &&
+        binsof(b_cov) intersect {0};
+  
+    bins low_low =
+        binsof(a_cov) intersect {[0:120]} &&
+        binsof(b_cov) intersect {[0:120]};
+
+    bins med_med =
+        binsof(a_cov) intersect {[121:220]} &&
+        binsof(b_cov) intersect {[121:220]};
+
+    bins high_high =
+        binsof(a_cov) intersect {[221:255]} &&
+        binsof(b_cov) intersect {[221:255]};
+  
+    bins med_high =
+       binsof(a_cov) intersect {[121:220]} &&
+       binsof(b_cov) intersect {[221:255]};
+  
+    bins high_med =
+       binsof(a_cov) intersect {[128:255]} &&
+       binsof(b_cov) intersect {[64:191]};
+
+}
+
+  endgroup
+  
+  
+
+  cg cov = new();
+  
+  // Assertion coverage flags
+
+bit reset_cov        = 0;
+bit clear_acc_cov    = 0;
+bit no_xz_cov        = 0;
+
+//Reset assertion logic
+  
+  property p_reset;
+    @(posedge clk)
+      rst |=> (c_out == 0);
+  endproperty
+
+  a_reset : assert property(p_reset)
+    else
+      $error("Reset failed to clear c_out");
+    
+    c_reset : cover property(p_reset)
+    begin
+     reset_cov = 1;
+    end
+
+//clear accummulator assertion logic
+
+  property p_clear_acc;
+    @(posedge clk)
+      clear_acc |=> !clear_acc;
+  endproperty
+
+  a_clear_acc : assert property(p_clear_acc)
+    else
+      $error("clear_acc stayed high for more than 1 cycle");
+    
+  c_clear_acc : cover property(p_clear_acc)
+    begin
+      clear_acc_cov = 1;
+    end
+
+//unknown value assertion
+
+  property p_no_xz;
+    @(posedge clk)
+      disable iff(rst)
+      !$isunknown(c_out);
+  endproperty
+
+  a_no_xz : assert property(p_no_xz)
+    else
+      $error("X/Z detected on c_out");
+    
+   c_no_xz : cover property(p_no_xz)
+    begin
+     no_xz_cov = 1;
+    end
+
+endinterface
+    
+    class packet;		//Transaction class
+
+  rand bit [7:0] A[3][3];
+  rand bit [7:0] B[3][3];
+
+//No constraints, because randomization will automatically give 0-255 values
+      
+//some corner cases:
+      
+      //zero matrix case
+
+  function void make_zero();
+
+    foreach(A[i,j])
+      A[i][j] = 0;
+
+    foreach(B[i,j])
+      B[i][j] = 0;
+
+  endfunction
+
+//identity matrix case
+
+  function void make_identity();
+
+    foreach(A[i,j])
+      A[i][j] = (i == j);
+
+    foreach(B[i,j])
+      B[i][j] = $urandom_range(0,255);
+
+  endfunction
+
+endclass
+    
+    class mon_packet;
+
+  int C[3][3];
+
+endclass
+    
+    class generator;
+
+  mailbox drv_mb;
+  mailbox scb_mb;
+
+  task run();
+
+    packet pkt;
+
+//corner case 1: zero matrix
+
+    pkt = new();
+
+    pkt.make_zero();
+
+    drv_mb.put(pkt);
+    scb_mb.put(pkt);
+    $display("TRANSACTION 1 : ZERO MATRIX");
+    display_packet(pkt);
+
+
+//corner case 2: identity matrix
+
+    pkt = new();
+
+    pkt.make_identity();
+
+    drv_mb.put(pkt);
+    scb_mb.put(pkt);
+    $display("TRANSACTION 2 : IDENTITY MATRIX");
+    display_packet(pkt);
+
+
+    repeat(20)
+    begin
+
+      pkt = new();
+
+      assert(pkt.randomize())
+        else
+          $error("Randomization Failed");
+
+      drv_mb.put(pkt);
+      scb_mb.put(pkt);
+
+      $display("RANDOM TRANSACTION");
+      display_packet(pkt);
+    end
+  endtask
+
+//display_packet function
+
+  function void display_packet(packet pkt);
+
+    $display("\nMATRIX A");
+
+    foreach(pkt.A[i,j])
+    begin
+      if(j==0)
+        $write("\n");
+
+      $write("%0d ", pkt.A[i][j]);
+    end
+
+    $display("\n");
+
+    $display("MATRIX B");
+
+    foreach(pkt.B[i,j])
+    begin
+      if(j==0)
+        $write("\n");
+
+      $write("%0d ", pkt.B[i][j]);
+    end
+
+    $display("\n");
+
+  endfunction
+
+endclass
+    
+    
+    class driver;
+
+  mailbox mb;
+
+  virtual myif drif;
+
+  task run();
+
+    packet pkt;
+
+    repeat(NUM_TRANS)
+    begin
+
+//Getting packet from Generator
+
+      mb.get(pkt);
+
+//Clearing accummulator
+
+      @(posedge drif.clk);
+
+      drif.clear_acc = 1;
+
+      @(posedge drif.clk);
+
+      drif.clear_acc = 0;
+
+//cycle 0
+
+      drif.a_in = {8'd0, 8'd0, pkt.A[0][0]};
+      drif.b_in = {8'd0, 8'd0, pkt.B[0][0]};
+
+      @(posedge drif.clk);
+
+//cycle 1
+
+      drif.a_in = {8'd0, pkt.A[1][0], pkt.A[0][1]};
+      drif.b_in = {8'd0, pkt.B[0][1], pkt.B[1][0]};
+
+      @(posedge drif.clk);
+
+//cycle 2
+
+      drif.a_in = {pkt.A[2][0], pkt.A[1][1], pkt.A[0][2]};
+      drif.b_in = {pkt.B[0][2], pkt.B[1][1], pkt.B[2][0]};
+
+      @(posedge drif.clk);
+
+//cycle 3
+
+      drif.a_in = {pkt.A[2][1], pkt.A[1][2], 8'd0};
+      drif.b_in = {pkt.B[1][2], pkt.B[2][1], 8'd0};
+
+      @(posedge drif.clk);
+
+//cycle 4
+
+      drif.a_in = {pkt.A[2][2], 8'd0, 8'd0};
+      drif.b_in = {pkt.B[2][2], 8'd0, 8'd0};
+
+      @(posedge drif.clk);
+
+//flush pipeline
+
+      repeat(8)
+      begin
+        drif.a_in = 0;
+        drif.b_in = 0;
+
+        @(posedge drif.clk);
+      end
+
+    end
+
+  endtask
+
+endclass
+    
+    class monitor;
+
+  mailbox mb;
+
+  virtual myif mon_if;
+
+  task run();
+
+    mon_packet mpkt;
+
+    repeat(NUM_TRANS)
+    begin
+
+//wait until transaction is getting completed
+
+      // Driver timing:
+      // clear_acc     = 2 cycles
+      // matrix inject = 5 cycles
+      // flush         = 8 cycles
+      // Total         = 15 cycles
+
+      repeat(15)
+        @(posedge mon_if.clk);
+
+//capturing final matrix
+
+      mpkt = new();
+
+      mpkt.C[0][0] = mon_if.c_out[(0*3+0)*32 +: 32];
+      mpkt.C[0][1] = mon_if.c_out[(0*3+1)*32 +: 32];
+      mpkt.C[0][2] = mon_if.c_out[(0*3+2)*32 +: 32];
+
+      mpkt.C[1][0] = mon_if.c_out[(1*3+0)*32 +: 32];
+      mpkt.C[1][1] = mon_if.c_out[(1*3+1)*32 +: 32];
+      mpkt.C[1][2] = mon_if.c_out[(1*3+2)*32 +: 32];
+
+      mpkt.C[2][0] = mon_if.c_out[(2*3+0)*32 +: 32];
+      mpkt.C[2][1] = mon_if.c_out[(2*3+1)*32 +: 32];
+      mpkt.C[2][2] = mon_if.c_out[(2*3+2)*32 +: 32];
+
+//Displaying actual matrix
+      
+      $display("\nMONITOR CAPTURED MATRIX");
+
+      foreach(mpkt.C[i,j])
+      begin
+        if(j==0)
+          $write("\n");
+
+        $write("%0d ", mpkt.C[i][j]);
+      end
+
+      $display("\n");
+
+      //sending it to scoreboard
+      
+      mb.put(mpkt);
+
+    end
+
+  endtask
+
+endclass
+    
+    class scoreboard;
+
+  mailbox exp_mb;   // From Generator
+  mailbox act_mb;   // From Monitor
+
+  int pass = 0;
+  int fail = 0;
+
+  task run();
+
+    packet  exp_pkt;
+    mon_packet act_pkt;
+
+    int C_exp[3][3];
+    int trans_fail;
+
+    repeat(NUM_TRANS)
+    begin
+
+//Getting expected and actual 
+
+      exp_mb.get(exp_pkt);
+      act_mb.get(act_pkt);
+
+//calculating matrix by row and column method
+
+      foreach(C_exp[i,j])
+      begin
+
+        C_exp[i][j] =
+          exp_pkt.A[i][0] * exp_pkt.B[0][j] +
+          exp_pkt.A[i][1] * exp_pkt.B[1][j] +
+          exp_pkt.A[i][2] * exp_pkt.B[2][j];
+
+      end
+
+//printing expected matrix
+
+      $display("\nEXPECTED MATRIX");
+
+      foreach(C_exp[i,j])
+      begin
+        if(j==0)
+          $write("\n");
+
+        $write("%0d ", C_exp[i][j]);
+      end
+
+//Now comparing
+
+      trans_fail = 0;
+
+      foreach(C_exp[i,j])
+      begin
+
+        if(C_exp[i][j] == act_pkt.C[i][j])
+        begin
+          pass++;
+        end
+        else
+        begin
+          fail++;
+          trans_fail++;
+
+          $error("Mismatch at C[%0d][%0d] : exp=%0d act=%0d", i, j, C_exp[i][j], act_pkt.C[i][j]);
+        end
+
+      end
+
+//Transaction result
+
+      if(trans_fail == 0)
+        $display("\nTRANSACTION PASS \n");
+      else
+        $display("\n TRANSACTION FAIL\n");
+
+    end
+
+//final summary
+
+    $display("\n-------");
+    $display("TOTAL PASS = %0d", pass);
+    $display("TOTAL FAIL = %0d", fail);
+    $display("------");
+
+    $display("MATRIX PASS RATE = %0.2f%%",
+             (pass * 100.0) / (pass + fail));
+
+  endtask
+
+endclass
+    
+    module tb;			//top module
+      
+  int assertion_hits;
+  parameter N          = 3;
+  parameter DATA_WIDTH = 8;
+  parameter ACC_WIDTH  = 32;
+
+  myif intf();
+
+//DUT
+
+  systolic_array #(
+      .N(N),
+      .DATA_WIDTH(DATA_WIDTH),
+      .ACC_WIDTH(ACC_WIDTH)
+  ) dut (
+      .clk(intf.clk),
+      .rst(intf.rst),
+      .clear_acc(intf.clear_acc),
+      .a_in(intf.a_in),
+      .b_in(intf.b_in),
+      .c_out(intf.c_out)
+  );
+
+//class handles
+
+  generator  gen;
+  driver     drv;
+  monitor    mon;
+  scoreboard scb;
+
+//mailboxes
+
+  mailbox gen_drv;
+  mailbox gen_scb;
+  mailbox mon_scb;
+
+//Generating clock
+
+  initial
+    intf.clk = 0;
+
+  always #5 intf.clk = ~intf.clk;
+
+//Reset logic
+
+  initial
+  begin
+
+    intf.rst       = 1;
+    intf.clear_acc = 0;
+    intf.a_in      = 0;
+    intf.b_in      = 0;
+
+    repeat(2)
+      @(posedge intf.clk);
+
+    intf.rst = 0;
+
+  end
+
+//Creating env
+
+  initial
+  begin
+
+//creating objects of mailboxes
+
+    gen_drv = new();
+    gen_scb = new();
+    mon_scb = new();
+
+//creating objects of class
+
+    gen = new();
+    drv = new();
+    mon = new();
+    scb = new();
+
+//Connect Generator
+
+    gen.drv_mb = gen_drv;
+    gen.scb_mb = gen_scb;
+
+//connect driver
+
+    drv.mb   = gen_drv;
+    drv.drif = intf;
+
+//connect monitor
+
+    mon.mb     = mon_scb;
+    mon.mon_if = intf;
+
+//connect scoreboard
+
+    scb.exp_mb = gen_scb;
+    scb.act_mb = mon_scb;
+
+//started simularor 
+
+    fork
+      gen.run();
+      drv.run();
+      mon.run();
+      scb.run();
+    join
+
+//coverage
+    
+
+
+$display("\nFunctional Coverage = %0.2f%%",
+         intf.cov.get_coverage());
+
+assertion_hits =
+      intf.reset_cov
+    + intf.clear_acc_cov
+    + intf.no_xz_cov;
+
+$display("Assertion Coverage = %0.2f%%",
+         assertion_hits * 100.0 / 3.0);
+//finish
+
+    $finish;
+
+  end
+
+endmodule
